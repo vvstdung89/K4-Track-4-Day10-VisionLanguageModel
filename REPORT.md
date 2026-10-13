@@ -11,8 +11,9 @@ Họ tên: Văn Quốc Dũng - 2A202602505
 | E3 | + LoRA ViT | 148,426,752 | 8.99 | 25.6 | 0.432 | 0.390–0.473 | 0.90 | 0.310 | 0.365 | 0.671 |
 | E4 | coord_scale = norm1000 (= E3, cùng predictions) | 148,426,752 | 8.99 | 25.6 | 0.432 | 0.390–0.473 | 0.90 | 0.310 | 0.365 | 0.671 |
 | E4 | coord_scale = pixel (setup E3) | 148,426,752 | 9.05 | 26.6 | 0.398 | 0.359–0.435 | 1.09 | 0.291 | 0.299 | 0.689 |
+| E5 | GRPO từ E3 (bonus) | 39,321,600 | 8.04 | 31.1 | 0.438 | 0.394–0.481 | 0.79 | 0.287 | 0.383 | 0.662 |
 
-E1–E4 huấn luyện trên Colab L4, fp16, 300 bước (batch 2 × grad_accum 4, seed 42). Phút suy luận test (311 ảnh, batch 4): E1 16.7 · E2 13.3 · E3 13.8 · E4-pixel 16.3.
+E1–E4 huấn luyện trên Colab L4, fp16, 300 bước (batch 2 × grad_accum 4, seed 42). Phút suy luận test (311 ảnh, batch 4): E1 16.7 · E2 13.3 · E3 13.8 · E4-pixel 16.3 · E5 12.8. E5 = 60 bước GRPO (không phải 300 bước SFT).
 
 ## 10 câu hỏi (trả lời bằng **số của bạn**, không chép lại tài liệu)
 
@@ -178,6 +179,52 @@ Pixel thấp hơn **0,035 F1**, chủ yếu ở crack (−0,066), có 3 output h
 **Kết luận chưa đáng tin**: hai CI95 chồng nhau rộng (0,390–0,435), mỗi giá trị chỉ chạy một seed, và test chỉ có 3 phiên. Tôi chỉ có thể nói thang 0–1000 *có xu hướng* tốt hơn, có thể vì Qwen3-VL được huấn luyện trước với toạ độ 0–1000. Tôi chưa kiểm chứng giả thuyết này: loss bước đầu của bản pixel thậm chí còn thấp hơn (1,90 so với 2,04).
 
 Kết luận chắc chắn duy nhất là **sự nhất quán** giữa nhãn, prompt và cách chấm. Lệch thang ở bất kỳ khâu nào cho F1 = 0 (Câu 3), lớn hơn rất nhiều so với chênh lệch 0,035 giữa hai thang.
+
+## Bonus E5: GRPO với reward IoU
+
+**Hàm reward** (`src/reward.py`): trả 0 nếu output không parse được bằng `parse_output` của trọng tài, và 1 nếu ảnh không có box thật và model cũng trả `[]`. Còn lại, reward = `0,2 + 0,8 · ΣIoU / max(n_gt, n_pred, 1)`. ΣIoU là tổng IoU của các cặp ghép tham lam cùng lớp với IoU ≥ 0,5, cùng cách ghép như `score.py`. Mẫu số `max(n_gt, n_pred)` phạt cả box bỏ sót lẫn box bịa.
+
+Tôi viết test **trước** khi chạy GRPO, ở `tests_student/test_reward.py`: 7 test, `python -m pytest tests_student -q` cho **7 passed** cả trên máy lẫn trên Colab. Các trường hợp được kiểm tra:
+- hoàn hảo, kể cả có bọc ```` ```json ```` và đổi thứ tự box → 1;
+- JSON hỏng, bị cắt cụt, hoặc box ngược `x2 ≤ x1` → 0;
+- đúng chỗ nhưng sai lớp → 0,2;
+- thừa box → 0,2 + 0,8·2/4, và box trùng nhau không được ghép hai lần;
+- rỗng/rỗng → 1, rỗng một phía → 0,2;
+- IoU 0,82 được tính theo đúng tỉ lệ, IoU 0,25 (dưới ngưỡng) → 0,2;
+- wrapper cho định dạng completion của trl.
+
+**Huấn luyện**: `trl==1.9.2` `GRPOTrainer`, khởi tạo từ E3 (setup tốt nhất). Chỉ train adapter LoRA của LLM và ViT (39,321,600 tham số); projector của E3 được nạp lại và giữ đóng băng. Tham số lấy từ `configs/e5.yaml`: 4 lần sinh mỗi ảnh, `max_completion_length` 128, 60 bước, lr 5e-6, `beta` 0 (không dùng model tham chiếu hay KL), `use_vllm=False`, temperature 1,0. Mỗi bước dùng 4 ảnh × 4 mẫu = 16 completion, tổng cộng 240 ảnh train. Thời gian 31.1 phút, VRAM đỉnh 8.04 GB. Log từng bước nằm ở `work/e5_log.json` (đã chép lên Drive).
+
+Một lỗi tôi gặp: trl 1.9.2 tự ép tham số huấn luyện của model lượng tử sang **bf16**, làm GradScaler fp16 báo lỗi "not implemented for 'BFloat16'". T4 không hỗ trợ bf16, nên tôi giữ bản fp32 của LoRA E3 và gán lại sau khi tạo trainer, trước khi optimizer được tạo.
+
+![Reward GRPO](report/figures/e5_grpo_reward.png)
+*Reward trung bình (16 mẫu/bước) và độ dài completion theo bước GRPO.*
+
+Reward khi huấn luyện **không tăng rõ**: trung bình bước 1–10 là 0,473 và bước 51–60 là 0,409. Mỗi bước dùng 4 ảnh mới nên reward của từng bước phụ thuộc chủ yếu vào độ khó của ảnh: độ lệch chuẩn trong nhóm khoảng 0,22, và tỉ lệ nhóm có cả 4 mẫu cùng reward tăng từ 7% lên 15%. Với lr 5e-6 và chỉ 60 bước, chính sách gần như không đổi.
+
+**Kiểm tra reward hacking** trên cùng 311 ảnh test:
+
+| Chỉ số | E3 (SFT) | E5 (GRPO) |
+|---|---|---|
+| Reward trung bình trên test | 0,450 | 0,462 |
+| Output JSON hỏng | 0 | 0 |
+| Output `[]` | 0 | 0 |
+| Số box / ảnh (GT: 1,87) | 1,666 | 1,543 |
+| Diện tích box trung vị (% khung) | 1,003 | 1,045 |
+| Box khổng lồ (> 25% khung) | 0 | 0 |
+| Output > 128 token | 3 | 3 |
+| Số token output trung bình | 47,125 | 43,797 |
+| FP "bịa" (không chạm box thật) | 125 | 93 |
+
+Không thấy hai kiểu hack kinh điển: không có output `[]`, không có box khổng lồ, không có JSON hỏng. Tuy vậy có một xu hướng nhẹ là **"nói ít đi"**: ít box hơn (1,67 → 1,54 box/ảnh), output ngắn hơn (47,1 → 43,8 token), ít box bịa hơn (125 → 93). Precision tăng từ 0,459 lên 0,485 trong khi recall giảm nhẹ từ 0,408 xuống 0,400. Đây đúng là hướng mà reward khuyến khích:
+- mẫu số `max(n_gt, n_pred)` phạt box bịa;
+- giới hạn 128 token cho reward 0 khi câu trả lời bị cắt. Trong khi đó 5 câu trả lời của train dài hơn 256 token, nên với ảnh nhiều box, model được lợi khi liệt kê ít box hơn.
+
+Nếu chạy lâu hơn, đây là chỗ có thể trượt thành hack thật (bỏ box để giữ JSON hợp lệ). Nên đặt `max_completion_length` ≥ 256.
+
+**So với SFT**: F1 từ 0,432 (CI95 0,390–0,473) lên **0,438** (CI95 0,394–0,481), tức **+0,006**, và hai CI95 chồng nhau gần như hoàn toàn: **không có cải thiện có ý nghĩa**. F1 từng lớp thay đổi trong phạm vi nhiễu: pothole 0,310 → 0,287, crack 0,365 → 0,383, manhole 0,671 → 0,662. FP/ảnh giảm từ 0,90 xuống 0,79. 165/311 output test có thay đổi về chữ nhưng F1 gần như giữ nguyên.
+
+Kết luận: với cấu hình này, GRPO chỉ tinh chỉnh nhẹ (precision cao hơn, ít box bịa hơn). Muốn thấy tác dụng rõ cần nhiều bước hoặc lr lớn hơn, và nên thêm KL (`beta` > 0) để giữ model gần SFT khi lr lớn.
 
 ## Nhìn lại
 
