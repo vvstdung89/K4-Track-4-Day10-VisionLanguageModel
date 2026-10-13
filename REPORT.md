@@ -6,7 +6,7 @@ Họ tên: Văn Quốc Dũng - 2A202602505
 | Mã | Setup | Tham số huấn luyện | VRAM đỉnh (GB) | Phút | F1 | CI95 | FP/ảnh | F1 pothole | F1 crack | F1 manhole |
 |---|---|---|---|---|---|---|---|---|---|---|
 | E0 | zero-shot | 0 | 3.94 (suy luận, L4) | 7.1 (suy luận) | 0.103 | 0.077–0.134 | 0.96 | 0.164 | 0.030 | 0.235 |
-| E1 | LoRA LLM | | | | | | | | | |
+| E1 | LoRA LLM | 33,030,144 | 6.98 | 20.8 | 0.264 | 0.227–0.304 | 1.30 | 0.160 | 0.195 | 0.532 |
 | E2 | + projector | | | | | | | | | |
 | E3 | + LoRA ViT | | | | | | | | | |
 | E4 | (ghi biến và giá trị) | | | | | | | | | |
